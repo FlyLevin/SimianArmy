@@ -91,7 +91,7 @@ public class TestChaosMonkeyArmy {
 
     private void checkSshActions(TestChaosMonkeyContext ctx, String key) {
         List<SshAction> sshActions = ctx.getSshActions();
-        #Assert.assertEquals(sshActions.size(), 5);
+        //Assert.assertEquals(sshActions.size(), 5);
 
         Assert.assertEquals(sshActions.get(0).getMethod(), "put");
         Assert.assertEquals(sshActions.get(0).getInstanceId(), "0:i-123456789012345670");
