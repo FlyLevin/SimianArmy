@@ -84,7 +84,7 @@ public abstract class ScriptChaosType extends ChaosType {
         }
 
         ssh.put("/tmp/" + filename, script);
-        ExecResponse response = ssh.exec("/bin/bash /tmp/" + filename);
+        ExecResponse response = ssh.exec("/bin/bash /tmp/" + filename + " > /dev/null 2>&1");
         if (response.getExitStatus() != 0) {
             LOGGER.warn("Got non-zero output from running script: {}", response);
         }
