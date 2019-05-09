@@ -89,7 +89,7 @@ public abstract class ScriptChaosType extends ChaosType {
             LOGGER.warn("Got non-zero output from running script: {}", response);
         }
         LOGGER.info("Got output from running script: {}", response);
-        ExecResponse response = ssh.exec("sleep 3");
+        ssh.exec("sleep 3");
         ssh.disconnect();
     }
 }
