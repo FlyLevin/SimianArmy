@@ -12,6 +12,5 @@ EOF
 # 32 parallel 100% CPU tasks should hit even the biggest EC2 instances
 for i in {1..32}
 do
-    echo $i >> /tmp/test.log
-    nohup /bin/bash /tmp/infiniteburn.sh > /tmp/nohup.log 2>&1 &
+    nohup /bin/bash /tmp/infiniteburn.sh > /tmp/nohup.log 2>&1 & disown
 done
