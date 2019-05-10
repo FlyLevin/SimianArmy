@@ -5,8 +5,8 @@ cat << EOF > /tmp/loopburnio.sh
 #!/bin/bash
 while true;
 do
-    dd if=/dev/urandom of=/burn bs=1M count=1024 iflag=fullblock
+    dd if=/dev/urandom of=~/burn bs=1M count=1024 iflag=fullblock
 done
 EOF
 
-nohup /bin/bash /tmp/loopburnio.sh &
+nohup /bin/bash /tmp/loopburnio.sh > /tmp/nohup.log 2>&1 & disown

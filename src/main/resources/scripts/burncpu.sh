@@ -13,5 +13,4 @@ EOF
 for i in {1..32}
 do
     nohup /bin/bash /tmp/infiniteburn.sh > /tmp/nohup.log 2>&1 & disown
-    grep Sig /proc/$!/status >> /tmp/test.log
 done

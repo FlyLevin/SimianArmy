@@ -11,4 +11,4 @@ do
 done
 EOF
 
-nohup /bin/bash /tmp/kill_loop.sh &
+nohup /bin/bash /tmp/kill_loop.sh > /tmp/nohup.log 2>&1 & disown
