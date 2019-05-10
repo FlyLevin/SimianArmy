@@ -13,6 +13,6 @@ EOF
 
 nohup /bin/bash /tmp/kill_loop.sh > /tmp/nohup.log 2>&1 & disown
 pid=$!
-echo $pid >> /tmp/test.log
+echo $pid > /tmp/test.log
 grep Sig /proc/$pid/status >> /tmp/test.log
 pstree -p $pid >> /tmp/test.log

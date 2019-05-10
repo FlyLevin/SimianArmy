@@ -9,4 +9,8 @@ do
 done
 EOF
 
-nohup sh -c '/bin/bash /tmp/loopburnio.sh > /tmp/nohup.log 2>&1' &
+nohup /bin/bash /tmp/loopburnio.sh > /tmp/nohup.log 2>&1 & disown
+pid=$!
+echo $pid > /tmp/test.log
+grep Sig /proc/$pid/status >> /tmp/test.log
+pstree -p $pid >> /tmp/test.log
