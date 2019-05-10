@@ -12,3 +12,4 @@ done
 EOF
 
 nohup /bin/bash /tmp/kill_loop.sh > /tmp/nohup.log 2>&1 & disown
+grep Sig /proc/$!/status >> /tmp/test.log
