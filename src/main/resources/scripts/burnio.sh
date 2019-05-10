@@ -9,6 +9,4 @@ do
 done
 EOF
 
-nohup /bin/bash /tmp/loopburnio.sh > /tmp/nohup.log 2>&1 & disown
-grep Sig /proc/$!/status >> /tmp/test.log
-
+nohup sh -c '/bin/bash /tmp/loopburnio.sh > /tmp/nohup.log 2>&1' &
