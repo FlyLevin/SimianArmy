@@ -88,6 +88,7 @@ public abstract class ScriptChaosType extends ChaosType {
         if (response.getExitStatus() != 0) {
             LOGGER.warn("Got non-zero output from running script: {}", response);
         }
+        LOGGER.info("Got output from running script: {}", response);
         ssh.disconnect();
     }
 }

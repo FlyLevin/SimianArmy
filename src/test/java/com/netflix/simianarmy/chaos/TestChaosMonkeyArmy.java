@@ -109,6 +109,7 @@ public class TestChaosMonkeyArmy {
 
         Assert.assertEquals(sshActions.get(3).getMethod(), "exec");
         Assert.assertEquals(sshActions.get(3).getInstanceId(), "1:i-123456789012345671");
+
     }
 
     @Test
