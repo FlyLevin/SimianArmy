@@ -18,37 +18,25 @@
 
 package com.netflix.simianarmy.janitor;
 
+import java.util.*;
 import com.google.common.collect.Maps;
 import com.netflix.servo.annotations.DataSourceType;
 import com.netflix.servo.annotations.Monitor;
 import com.netflix.servo.annotations.MonitorTags;
-import com.netflix.simianarmy.MonkeyCalendar;
-import com.netflix.simianarmy.MonkeyConfiguration;
-import com.netflix.simianarmy.MonkeyRecorder;
-import com.netflix.simianarmy.MonkeyRecorder.Event;
-import com.netflix.simianarmy.Resource;
-import com.netflix.simianarmy.Resource.CleanupState;
-import com.netflix.simianarmy.ResourceType;
-import com.netflix.simianarmy.janitor.JanitorMonkey.EventTypes;
-import com.netflix.simianarmy.janitor.JanitorMonkey.Type;
-
-import org.apache.commons.lang.Validate;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Date;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
-
+import com.netflix.servo.monitor.BasicCounter;
+import com.netflix.servo.monitor.Counter;
+import com.netflix.servo.monitor.MonitorConfig;
 import com.netflix.servo.monitor.Monitors;
 import com.netflix.servo.tag.BasicTagList;
 import com.netflix.servo.tag.TagList;
+import com.netflix.simianarmy.*;
+import com.netflix.simianarmy.MonkeyRecorder.Event;
+import com.netflix.simianarmy.Resource.CleanupState;
+import com.netflix.simianarmy.janitor.JanitorMonkey.EventTypes;
+import com.netflix.simianarmy.janitor.JanitorMonkey.Type;
+import org.apache.commons.lang.Validate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * An abstract implementation of Janitor. It marks resources that the rule engine considers
@@ -58,11 +46,11 @@ import com.netflix.servo.tag.TagList;
  * and the expected termination date is passed, the janitor removes the resources from the
  * cloud.
  */
-public abstract class AbstractJanitor implements Janitor {
+public abstract class AbstractJanitor implements Janitor, DryRunnableJanitor {
 
     /** The Constant LOGGER. */
     private static final Logger LOGGER = LoggerFactory.getLogger(AbstractJanitor.class);
-    
+
     /** Tags to attach to servo metrics */
     @MonitorTags
     protected TagList tags;
@@ -72,7 +60,7 @@ public abstract class AbstractJanitor implements Janitor {
     public String getRegion() {
         return region;
     }
-    
+
     /**
      * The rule engine used to decide if a resource should be a cleanup
      * candidate.
@@ -98,6 +86,8 @@ public abstract class AbstractJanitor implements Janitor {
 
     private final Collection<Resource> failedToCleanResources = new ArrayList<Resource>();
 
+    private final Collection<Resource> skippedVanishedOrValidResources = new ArrayList<>();
+
     private final MonkeyCalendar calendar;
 
     private final MonkeyConfiguration config;
@@ -106,9 +96,11 @@ public abstract class AbstractJanitor implements Janitor {
     private boolean leashed;
 
     private final MonkeyRecorder recorder;
-       
+
     /** The number of resources that have been checked on this run. */
     private int checkedResourcesCount;
+
+    private Counter cleanupDryRunFailureCount = new BasicCounter(MonitorConfig.builder("dryRunCleanupFailures").build());
 
     /**
      * Sets the flag to indicate if the janitor is leashed.
@@ -198,41 +190,41 @@ public abstract class AbstractJanitor implements Janitor {
         Validate.notNull(resourceType);
         // recorder could be null and no events are recorded when it is.
         this.recorder = ctx.recorder();
-        
+
         // setup servo tags, currently just tag each published metric with the region
-        this.tags = BasicTagList.of("simianarmy.janitor.region", ctx.region());        
-        
+        this.tags = BasicTagList.of("simianarmy.janitor.region", ctx.region());
+
         // register this janitor with servo
         String monitorObjName = String.format("simianarmy.janitor.%s.%s", this.resourceType.name(), this.region);
-        Monitors.registerObject(monitorObjName, this);     
+        Monitors.registerObject(monitorObjName, this);
     }
 
     @Override
     public ResourceType getResourceType() {
         return resourceType;
     }
-    
+
     /**
      * Clears this object's internal resource lists in preparation for a new
      * run.
-     * 
-     * This is an optional method as regular Janitor processing will 
-     * automatically clear resource lists as it runs.  
-     * 
+     *
+     * This is an optional method as regular Janitor processing will
+     * automatically clear resource lists as it runs.
+     *
      * This method offers an explicit clear so that the resources will be
      * consistent across the run.  For example, when starting a run after a
-     * previous run has finished, cleanedResources will be holding the cleaned 
-     * resources from the prior run until cleanupResources() is called.  By 
+     * previous run has finished, cleanedResources will be holding the cleaned
+     * resources from the prior run until cleanupResources() is called.  By
      * calling prepareToRun() first, the resource lists will be consistent
      * for the entire run.
      */
     public void prepareToRun() {
-        markedResources.clear();        
+        markedResources.clear();
         unmarkedResources.clear();
-        checkedResourcesCount = 0;    	
+        checkedResourcesCount = 0;
         cleanedResources.clear();
         failedToCleanResources.clear();
-    }        
+    }
 
     /**
      * Marks all resources obtained from the crawler as cleanup candidate if
@@ -240,14 +232,18 @@ public abstract class AbstractJanitor implements Janitor {
      */
     @Override
     public void markResources() {
-        markedResources.clear();        
+        if (config.getBoolOrElse("simianarmy.janitor.skipMark", false)) {
+            LOGGER.info("*****SKIPPING MARKING {}****", resourceType);
+            return ;
+        }
+
+        markedResources.clear();
         unmarkedResources.clear();
         checkedResourcesCount = 0;
         Map<String, Resource> trackedMarkedResources = getTrackedMarkedResources();
 
         List<Resource> crawledResources = crawler.resources(resourceType);
-        LOGGER.info(String.format("Looking for cleanup candidate in %d crawled resources.",
-                crawledResources.size()));
+        LOGGER.info("Looking for cleanup candidate in {} crawled resources. LeashMode={}", crawledResources.size(), leashed);
         Date now = calendar.now().getTime();
         for (Resource resource : crawledResources) {
         	checkedResourcesCount++;
@@ -255,45 +251,33 @@ public abstract class AbstractJanitor implements Janitor {
             if (!ruleEngine.isValid(resource)) {
                 // If the resource is already marked, ignore it
                 if (trackedResource != null) {
-                    LOGGER.debug(String.format("Resource %s is already marked.", resource.getId()));
+                    LOGGER.debug("Resource {} is already marked. LeashMode={}", resource.getId(), leashed);
                     continue;
                 }
-                LOGGER.info(String.format("Marking resource %s of type %s with expected termination time as %s",
-                        resource.getId(), resource.getResourceType(), resource.getExpectedTerminationTime()));
+                LOGGER.info("Marking resource {} of type {} with expected termination time as {} LeashMode={}"
+                        , resource.getId(), resource.getResourceType(), resource.getExpectedTerminationTime(), leashed);
                 resource.setState(CleanupState.MARKED);
                 resource.setMarkTime(now);
-                if (!leashed) {
-                    if (recorder != null) {
-                        Event evt = recorder.newEvent(Type.JANITOR, EventTypes.MARK_RESOURCE, region, resource.getId());
-                        addFieldsAndTagsToEvent(resource, evt);
-                        recorder.recordEvent(evt);
-                    }
-                    resourceTracker.addOrUpdate(resource);
-                    postMark(resource);
-                } else {
-                    LOGGER.info(String.format(
-                            "The janitor is leashed, no data change is made for marking the resource %s.",
-                            resource.getId()));
+                resourceTracker.addOrUpdate(resource);
+                if (!leashed && recorder != null) {
+                    Event evt = recorder.newEvent(Type.JANITOR, EventTypes.MARK_RESOURCE, resource, resource.getId());
+                    recorder.recordEvent(evt);
                 }
+
+                postMark(resource);
                 markedResources.add(resource);
             } else if (trackedResource != null) {
                 // The resource was marked and now the rule engine does not consider it as a cleanup candidate.
                 // So the janitor needs to unmark the resource.
-                LOGGER.info(String.format("Unmarking resource %s", resource.getId()));
+                LOGGER.info("Unmarking resource {} LeashMode={}", resource.getId(), leashed);
                 resource.setState(CleanupState.UNMARKED);
-                if (!leashed) {
-                    if (recorder != null) {
-                        Event evt = recorder.newEvent(
-                                Type.JANITOR, EventTypes.UNMARK_RESOURCE, region, resource.getId());
-                        addFieldsAndTagsToEvent(resource, evt);
-                        recorder.recordEvent(evt);
-                    }
-                    resourceTracker.addOrUpdate(resource);
-                } else {
-                    LOGGER.info(String.format(
-                            "The janitor is leashed, no data change is made for unmarking the resource %s.",
-                            resource.getId()));
+                resourceTracker.addOrUpdate(resource);
+                if (!leashed && recorder != null) {
+                    Event evt = recorder.newEvent(
+                            Type.JANITOR, EventTypes.UNMARK_RESOURCE, resource, resource.getId());
+                    recorder.recordEvent(evt);
                 }
+
                 unmarkedResources.add(resource);
             }
         }
@@ -323,60 +307,70 @@ public abstract class AbstractJanitor implements Janitor {
     public void cleanupResources() {
         cleanedResources.clear();
         failedToCleanResources.clear();
+        skippedVanishedOrValidResources.clear();
         Map<String, Resource> trackedMarkedResources = getTrackedMarkedResources();
-        LOGGER.info(String.format("Checking %d marked resources for cleanup.", trackedMarkedResources.size()));
 
+        LOGGER.info("Checking {} marked resources for cleanup. LeashMode={}", trackedMarkedResources.size(), leashed);
         Date now = calendar.now().getTime();
         for (Resource markedResource : trackedMarkedResources.values()) {
+            if (config.getBoolOrElse("simianarmy.janitor.skipVanishedOrValidResources", false)) {
+                // find matching crawled resource. This ensures we always have the freshest resource.
+                List<Resource> matchingCrawledResources = Optional.ofNullable(crawler.resources(markedResource.getId()))
+                        .orElse(Collections.emptyList());
+
+                LOGGER.info("Rechecking resource {} before deletion {} - matching candidates {}",
+                        markedResource, markedResource.getResourceType(), matchingCrawledResources);
+                Optional<Resource> crawledResource = matchingCrawledResources.stream()
+                        .filter(r -> r.equals(markedResource))
+                        .findFirst();
+
+                if (!crawledResource.isPresent() || ruleEngine.isValid(crawledResource.get())) {
+                    skippedVanishedOrValidResources.add(markedResource);
+                    LOGGER.warn("Skipping resource {} that either no longer exists or is now valid", markedResource);
+                    continue;
+                }
+            }
+
+
             if (canClean(markedResource, now)) {
-                LOGGER.info(String.format("Cleaning up resource %s of type %s",
-                        markedResource.getId(), markedResource.getResourceType().name()));
-                if (!leashed) {
-                    try {
+                LOGGER.info("Cleaning up resource {} of type {}. LeashMode={}",
+                        markedResource.getId(), markedResource.getResourceType().name(), leashed);
+                try {
+                    if (leashed) {
+                        cleanupDryRun(markedResource.cloneResource());
+                    } else {
                         cleanup(markedResource);
                         markedResource.setActualTerminationTime(now);
                         markedResource.setState(Resource.CleanupState.JANITOR_TERMINATED);
                         resourceTracker.addOrUpdate(markedResource);
                         if (recorder != null) {
-                            Event evt = recorder.newEvent(Type.JANITOR, EventTypes.CLEANUP_RESOURCE, region,
+                            Event evt = recorder.newEvent(Type.JANITOR, EventTypes.CLEANUP_RESOURCE, markedResource,
                                     markedResource.getId());
-                            addFieldsAndTagsToEvent(markedResource, evt);
                             recorder.recordEvent(evt);
                         }
-                    } catch (Exception e) {
-                        LOGGER.error(String.format("Failed to clean up the resource %s of type %s.",
-                                markedResource.getId(), markedResource.getResourceType().name()), e);
-                        failedToCleanResources.add(markedResource);
-                        continue;
+
+                        postCleanup(markedResource);
+                        cleanedResources.add(markedResource);
                     }
-                    postCleanup(markedResource);
-                } else {
-                    LOGGER.info(String.format(
-                            "The janitor is leashed, no data change is made for cleaning up the resource %s.",
-                            markedResource.getId()));
+                } catch (Exception e) {
+                    String message;
+                    if (e instanceof DryRunnableJanitorException) {
+                        message = String.format("Failed Dry Run cleanup of resource %s of type %s. LeashMode=%b",
+                                markedResource.getId(), markedResource.getResourceType().name(), leashed);
+                        cleanupDryRunFailureCount.increment();
+                    } else {
+                        message = String.format("Failed to clean up the resource %s of type %s. LeashMode=%b",
+                                markedResource.getId(), markedResource.getResourceType().name(), leashed);
+                        failedToCleanResources.add(markedResource);
+                    }
+
+                    LOGGER.error(message, e);
                 }
-                cleanedResources.add(markedResource);
             }
         }
     }
 
-	/** 
-	 * Adds selected resource fields and all the tags from the given resource as additional fields on the event.
-	 * @param resource the resource with the the source data
-	 * @param event    the event that will hold the source data as additional fields
-     */
-    private void addFieldsAndTagsToEvent(Resource resource, Event event) {
-    	if (resource == null) return;
-    	if (resource.getAllTagKeys() != null) {
-	    	for(String key : resource.getAllTagKeys()) {
-	    		event.addField(key, resource.getTag(key));
-	    	}
-    	}
-    	event.addField("ResourceDescription", resource.getDescription());
-    	event.addField("ResourceType", resource.getResourceType().toString());		
-	}
-
-	/** Determines if the input resource can be cleaned. The Janitor calls this method
+    /** Determines if the input resource can be cleaned. The Janitor calls this method
      * before cleaning up a resource and only cleans the resource when the method returns
      * true. A resource is considered to be OK to clean if
      * 1) it is marked as cleanup candidates
@@ -435,32 +429,27 @@ public abstract class AbstractJanitor implements Janitor {
         return Collections.unmodifiableCollection(failedToCleanResources);
     }
 
-    private void unmarkUserTerminatedResources(
-            List<Resource> crawledResources, Map<String, Resource> trackedMarkedResources) {
+    private void unmarkUserTerminatedResources(List<Resource> crawledResources, Map<String, Resource> trackedMarkedResources) {
         Set<String> crawledResourceIds = new HashSet<String>();
         for (Resource crawledResource : crawledResources) {
             crawledResourceIds.add(crawledResource.getId());
         }
-        for (Resource markedResource : trackedMarkedResources.values()) {
-            if (!crawledResourceIds.contains(markedResource.getId())) {
-                // The resource does not exist anymore.
-                LOGGER.info(String.format(
-                        "Resource %s is not returned by the crawler. It should already be terminated.",
-                        markedResource.getId()));
-                if (!leashed) {
+
+        if (config.getBoolOrElse("simianarmy.janitor.unmarkResourceNotReturnedByCrawler", false)) {
+            for (Resource markedResource : trackedMarkedResources.values()) {
+                if (!crawledResourceIds.contains(markedResource.getId())) {
+                    // The resource does not exist anymore.
+                    LOGGER.info("Resource {} is not returned by the crawler. It should already be terminated. LeashMode={}",
+                            markedResource.getId(), leashed);
+
                     markedResource.setState(Resource.CleanupState.USER_TERMINATED);
                     resourceTracker.addOrUpdate(markedResource);
-                } else {
-                    LOGGER.info(String.format(
-                            "The janitor is leashed, no data change is made for unmarking "
-                                    + "the user terminated resource %s.",
-                                    markedResource.getId()));
+                    unmarkedResources.add(markedResource);
                 }
-                unmarkedResources.add(markedResource);
             }
         }
     }
-    
+
     @Monitor(name="cleanedResourcesCount", type=DataSourceType.GAUGE)
     public int getResourcesCleanedCount() {
       return cleanedResources.size();
@@ -474,16 +463,24 @@ public abstract class AbstractJanitor implements Janitor {
     @Monitor(name="failedToCleanResourcesCount", type=DataSourceType.GAUGE)
     public int getFailedToCleanResourcesCount() {
       return failedToCleanResources.size();
-    }    
+    }
 
     @Monitor(name="unmarkedResourcesCount", type=DataSourceType.GAUGE)
     public int getUnmarkedResourcesCount() {
       return unmarkedResources.size();
-    }    
-    
+    }
+
     @Monitor(name="checkedResourcesCount", type=DataSourceType.GAUGE)
     public int getCheckedResourcesCount() {
       return checkedResourcesCount;
-    }    
-    
+    }
+
+    @Monitor(name="skippedVanishedOrValidResources", type = DataSourceType.GAUGE)
+    public int skippedVanishedOrValidResources() {
+        return skippedVanishedOrValidResources.size();
+    }
+
+    public Counter getCleanupDryRunFailureCount() {
+        return cleanupDryRunFailureCount;
+    }
 }
