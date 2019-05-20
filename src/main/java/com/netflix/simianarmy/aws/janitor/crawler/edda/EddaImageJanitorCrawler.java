@@ -18,6 +18,7 @@
 
 package com.netflix.simianarmy.aws.janitor.crawler.edda;
 
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
@@ -37,14 +38,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Date;
-import java.util.EnumSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -66,7 +60,7 @@ public class EddaImageJanitorCrawler implements JanitorCrawler {
     /** The name representing the additional field name for whether the image is a base image. **/
     public static final String AMI_FIELD_BASE_IMAGE = "Base_Image";
 
-    private static final int BATCH_SIZE = 500;
+    private static final int BATCH_SIZE = 100;
 
     private final EddaClient eddaClient;
     private final List<String> regions = Lists.newArrayList();
@@ -144,7 +138,11 @@ public class EddaImageJanitorCrawler implements JanitorCrawler {
         Collection<String> excludedImageIds = getExcludedImageIds();
         List<Resource> resources = Lists.newArrayList();
         for (String region : regions) {
-            resources.addAll(getAMIResourcesInRegion(region, excludedImageIds, imageIds));
+            try {
+                resources.addAll(getAMIResourcesInRegion(region, excludedImageIds, imageIds));
+            } catch (Exception e) {
+                LOGGER.error("AMI look up failed for {} in {}", imageIds, region, e);
+            }
         }
         return resources;
     }
@@ -162,7 +160,10 @@ public class EddaImageJanitorCrawler implements JanitorCrawler {
     private JsonNode getImagesInJson(String region, String... imageIds) {
         String url = eddaClient.getBaseUrl(region) + "/aws/images";
         if (imageIds != null && imageIds.length != 0) {
-            url += StringUtils.join(imageIds, ',');
+            url += "/" + StringUtils.join(imageIds, ',');
+            if (imageIds.length == 1) {
+                url +=","; // Edda will return a non-array if passing exactly one imageId which will fail the crawler
+            }
             LOGGER.info(String.format("Getting unreferenced AMIs in region %s for %d ids", region, imageIds.length));
         } else {
             LOGGER.info(String.format("Getting all unreferenced AMIs in region %s", region));
@@ -242,8 +243,9 @@ public class EddaImageJanitorCrawler implements JanitorCrawler {
         LOGGER.info(String.format("Got creation time for %d images", imageIdToCreationTime.size()));
     }
 
-    private List<Resource> getAMIResourcesInRegion(
-            String region, Collection<String> excludedImageIds, String... imageIds) {
+    private List<Resource> getAMIResourcesInRegion(String region,
+                                                   Collection<String> excludedImageIds,
+                                                   String... imageIds) {
         JsonNode jsonNode = getImagesInJson(region, imageIds);
         List<Resource> resources = Lists.newArrayList();
         for (Iterator<JsonNode> it = jsonNode.getElements(); it.hasNext();) {

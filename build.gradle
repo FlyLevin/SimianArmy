@@ -23,8 +23,8 @@ repositories {
 apply plugin: 'war'
 apply plugin: 'jetty'
 
-sourceCompatibility = 1.7
-targetCompatibility = 1.7
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
 
 dependencies {
     // for the VMWareClient
@@ -38,7 +38,7 @@ dependencies {
     compile 'org.codehaus.jackson:jackson-core-asl:1.9.2'
     compile 'org.codehaus.jackson:jackson-mapper-asl:1.9.2'
     compile ('com.netflix.eureka:eureka-client:1.4.1') {
-            exclude group: 'com.google.inject'
+           exclude group: 'com.google.inject'
     }
     compile 'com.amazonaws:aws-java-sdk:1.11.28'
     compile 'commons-lang:commons-lang:2.6'
